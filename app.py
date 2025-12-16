@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
-import altair as alt
-from datetime import time
+from data import load_data, calculate_ranking, get_station_peaks
+from charts import create_line_chart, create_comparison_chart, create_ranking_bar_chart, create_heatmap
 
 # 페이지 설정
 st.set_page_config(
@@ -9,76 +9,6 @@ st.set_page_config(
     page_icon="🚇",
     layout="wide"
 )
-
-# ==================== 데이터 로딩 및 전처리 ====================
-
-@st.cache_data
-def load_data():
-    """CSV 파일을 로딩하고 long 형태로 변환"""
-    csv_file = '서울교통공사_지하철혼잡도정보_20250930.csv'
-    
-    # 인코딩 자동 시도
-    for encoding in ['cp949', 'euc-kr', 'utf-8-sig', 'utf-8']:
-        try:
-            df = pd.read_csv(csv_file, encoding=encoding)
-            break
-        except:
-            continue
-    else:
-        st.error("CSV 파일을 읽을 수 없습니다. 인코딩 문제를 확인하세요.")
-        return None
-    
-    # 컬럼명 정리
-    df.columns = df.columns.str.strip()
-    
-    # 메타 컬럼 (처음 5개)
-    meta_cols = df.columns[:5].tolist()
-    time_cols = df.columns[5:].tolist()
-    
-    # 시간 컬럼을 HH:MM 형태로 변환하는 매핑
-    time_mapping = {}
-    for col in time_cols:
-        # "5시30분" -> "05:30" 형태로 변환
-        col_clean = col.replace('시', ':').replace('분', '').strip()
-        parts = col_clean.split(':')
-        if len(parts) == 2:
-            hour = parts[0].zfill(2)
-            minute = parts[1].zfill(2)
-            time_mapping[col] = f"{hour}:{minute}"
-    
-    # wide -> long 변환
-    df_long = df.melt(
-        id_vars=meta_cols,
-        value_vars=time_cols,
-        var_name='time_original',
-        value_name='crowding'
-    )
-    
-    # 시간 표준화
-    df_long['time'] = df_long['time_original'].map(time_mapping)
-    
-    # 혼잡도 값을 float로 변환 (공백 제거)
-    df_long['crowding'] = pd.to_numeric(
-        df_long['crowding'].astype(str).str.strip().str.replace(',', ''),
-        errors='coerce'
-    )
-    
-    # 시간 정렬을 위한 시간 순서 컬럼 추가
-    def time_to_minutes(t):
-        """HH:MM을 분 단위로 변환 (00:00~00:30은 24시간 이후로 처리)"""
-        if pd.isna(t):
-            return None
-        h, m = map(int, t.split(':'))
-        if h == 0:  # 자정 이후는 24시간 더하기
-            h = 24
-        return h * 60 + m
-    
-    df_long['time_order'] = df_long['time'].apply(time_to_minutes)
-    
-    # 결측치 제거
-    df_long = df_long.dropna(subset=['crowding', 'time', 'time_order'])
-    
-    return df_long
 
 # ==================== 데이터 로드 ====================
 
@@ -115,13 +45,29 @@ selected_line = st.sidebar.selectbox(
 # 선택된 호선의 데이터만 필터링
 df_filtered = df[df[meta_col_호선] == selected_line].copy()
 
+# 비교 모드
+compare_mode = st.sidebar.checkbox("🔄 역 비교 모드", value=False)
+
 # 역 필터
-stations = ['전체'] + sorted(df_filtered[meta_col_역명].unique().tolist())
-selected_station = st.sidebar.selectbox(
-    "역 선택",
-    options=stations,
-    index=0
-)
+if compare_mode:
+    # 비교 모드: 멀티셀렉트
+    stations_list = sorted(df_filtered[meta_col_역명].unique().tolist())
+    selected_stations = st.sidebar.multiselect(
+        "비교할 역 선택 (최대 3개)",
+        options=stations_list,
+        default=[],
+        max_selections=3
+    )
+    selected_station = None  # 비교 모드에서는 사용 안함
+else:
+    # 일반 모드: 단일 선택
+    stations = ['전체'] + sorted(df_filtered[meta_col_역명].unique().tolist())
+    selected_station = st.sidebar.selectbox(
+        "역 선택",
+        options=stations,
+        index=0
+    )
+    selected_stations = []  # 일반 모드에서는 사용 안함
 
 # 운행구분 필터
 directions = ['전체'] + sorted(df_filtered[meta_col_운행구분].unique().tolist())
@@ -168,73 +114,105 @@ df_filtered = df_filtered[
 
 # ==================== 탭 구성 ====================
 
-tab1, tab2 = st.tabs(["📍 역 상세", "🏆 랭킹"])
+tab1, tab2, tab3 = st.tabs(["📍 역 상세", "🏆 랭킹", "🔥 혼잡도 히트맵"])
 
 # ==================== 탭 1: 역 상세 ====================
 
 with tab1:
     st.header("역별 시간대 혼잡도 상세")
     
-    if selected_station == '전체':
-        st.info("👈 사이드바에서 특정 역을 선택하면 상세 정보를 확인할 수 있습니다.")
-    else:
-        # 선택된 역의 데이터
-        df_station = df_filtered[df_filtered[meta_col_역명] == selected_station].copy()
-        
-        if df_station.empty:
-            st.warning(f"선택한 조건에 해당하는 데이터가 없습니다.")
+    # 비교 모드
+    if compare_mode:
+        if not selected_stations:
+            st.info("👈 사이드바에서 비교할 역을 선택하세요 (최대 3개)")
         else:
-            # KPI 표시
-            col1, col2, col3 = st.columns(3)
+            # 선택된 역들의 데이터
+            df_compare = df_filtered[df_filtered[meta_col_역명].isin(selected_stations)].copy()
             
-            with col1:
-                peak_value = df_station['crowding'].max()
-                st.metric("피크 혼잡도", f"{peak_value:.1f}")
-            
-            with col2:
-                peak_time = df_station.loc[df_station['crowding'].idxmax(), 'time']
-                st.metric("피크 시간", peak_time)
-            
-            with col3:
-                avg_value = df_station['crowding'].mean()
-                st.metric("평균 혼잡도", f"{avg_value:.1f}")
-            
-            st.markdown("---")
-            
-            # 라인차트
-            if selected_direction == '전체':
-                # 운행구분별로 색상 분리
-                chart = alt.Chart(df_station).mark_line(point=True).encode(
-                    x=alt.X('time:N', title='시간', sort=all_times),
-                    y=alt.Y('crowding:Q', title='혼잡도'),
-                    color=alt.Color(f'{meta_col_운행구분}:N', title='운행구분'),
-                    tooltip=['time:N', 'crowding:Q', f'{meta_col_운행구분}:N']
-                ).properties(
-                    width=800,
-                    height=400,
-                    title=f'{selected_station} 시간대별 혼잡도'
-                )
+            if df_compare.empty:
+                st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
             else:
-                # 단일 라인
-                chart = alt.Chart(df_station).mark_line(point=True).encode(
-                    x=alt.X('time:N', title='시간', sort=all_times),
-                    y=alt.Y('crowding:Q', title='혼잡도'),
-                    tooltip=['time:N', 'crowding:Q']
-                ).properties(
-                    width=800,
-                    height=400,
-                    title=f'{selected_station} ({selected_direction}) 시간대별 혼잡도'
+                # 각 역별 KPI를 컬럼으로 표시
+                cols = st.columns(len(selected_stations))
+                
+                for idx, station in enumerate(selected_stations):
+                    df_station_temp = df_compare[df_compare[meta_col_역명] == station]
+                    if not df_station_temp.empty:
+                        with cols[idx]:
+                            st.subheader(station)
+                            peak_val = df_station_temp['crowding'].max()
+                            avg_val = df_station_temp['crowding'].mean()
+                            peak_t = df_station_temp.loc[df_station_temp['crowding'].idxmax(), 'time']
+                            st.metric("피크", f"{peak_val:.1f}")
+                            st.metric("평균", f"{avg_val:.1f}")
+                            st.caption(f"피크 시간: {peak_t}")
+                
+                st.markdown("---")
+                
+                # 비교 라인차트
+                chart = create_comparison_chart(
+                    df_compare,
+                    selected_stations,
+                    selected_direction,
+                    meta_col_역명,
+                    meta_col_운행구분,
+                    all_times
                 )
+                st.altair_chart(chart, use_container_width=True)
+                
+                # 데이터 테이블
+                with st.expander("상세 데이터 보기"):
+                    display_cols = [meta_col_역명, meta_col_운행구분, 'time', 'crowding']
+                    st.dataframe(
+                        df_compare[display_cols].sort_values([meta_col_역명, 'time_order']),
+                        hide_index=True
+                    )
+    
+    # 일반 모드 (단일 역 선택)
+    else:
+        if selected_station == '전체':
+            st.info("👈 사이드바에서 특정 역을 선택하면 상세 정보를 확인할 수 있습니다.")
+        else:
+            # 선택된 역의 데이터
+            df_station = df_filtered[df_filtered[meta_col_역명] == selected_station].copy()
             
-            st.altair_chart(chart, use_container_width=True)
-            
-            # 데이터 테이블
-            with st.expander("상세 데이터 보기"):
-                display_cols = [meta_col_역명, meta_col_운행구분, 'time', 'crowding']
-                st.dataframe(
-                    df_station[display_cols].sort_values('time_order'),
-                    hide_index=True
+            if df_station.empty:
+                st.warning(f"선택한 조건에 해당하는 데이터가 없습니다.")
+            else:
+                # KPI 표시
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    peak_value = df_station['crowding'].max()
+                    st.metric("피크 혼잡도", f"{peak_value:.1f}")
+                
+                with col2:
+                    peak_time = df_station.loc[df_station['crowding'].idxmax(), 'time']
+                    st.metric("피크 시간", peak_time)
+                
+                with col3:
+                    avg_value = df_station['crowding'].mean()
+                    st.metric("평균 혼잡도", f"{avg_value:.1f}")
+                
+                st.markdown("---")
+                
+                # 라인차트
+                chart = create_line_chart(
+                    df_station,
+                    selected_station,
+                    selected_direction,
+                    meta_col_운행구분,
+                    all_times
                 )
+                st.altair_chart(chart, use_container_width=True)
+                
+                # 데이터 테이블
+                with st.expander("상세 데이터 보기"):
+                    display_cols = [meta_col_역명, meta_col_운행구분, 'time', 'crowding']
+                    st.dataframe(
+                        df_station[display_cols].sort_values('time_order'),
+                        hide_index=True
+                    )
 
 # ==================== 탭 2: 랭킹 ====================
 
@@ -244,30 +222,14 @@ with tab2:
     if df_filtered.empty:
         st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
     else:
-        # 역별/운행구분별로 피크값 계산
-        ranking = df_filtered.groupby([meta_col_역명, meta_col_역번호, meta_col_운행구분]).agg({
-            'crowding': ['max', 'mean']
-        }).reset_index()
-        
-        ranking.columns = [meta_col_역명, meta_col_역번호, meta_col_운행구분, 'peak', 'avg']
-        
-        # 피크 시간 찾기
-        def get_peak_time(row):
-            station_data = df_filtered[
-                (df_filtered[meta_col_역명] == row[meta_col_역명]) &
-                (df_filtered[meta_col_운행구분] == row[meta_col_운행구분])
-            ]
-            if not station_data.empty:
-                return station_data.loc[station_data['crowding'].idxmax(), 'time']
-            return None
-        
-        ranking['peak_time'] = ranking.apply(get_peak_time, axis=1)
-        
-        # 피크 기준 정렬
-        ranking = ranking.sort_values('peak', ascending=False).head(top_n)
-        
-        # 순위 추가
-        ranking.insert(0, '순위', range(1, len(ranking) + 1))
+        # 랭킹 계산
+        ranking = calculate_ranking(
+            df_filtered,
+            meta_col_역명,
+            meta_col_역번호,
+            meta_col_운행구분,
+            top_n
+        )
         
         # KPI
         col1, col2, col3 = st.columns(3)
@@ -306,21 +268,109 @@ with tab2:
             }
         )
         
+        # CSV 다운로드 버튼
+        csv = display_ranking.to_csv(index=False, encoding='utf-8-sig')
+        st.download_button(
+            label="📥 랭킹 결과 다운로드 (CSV)",
+            data=csv,
+            file_name=f'지하철혼잡도_랭킹_{selected_line}_{pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")}.csv',
+            mime='text/csv',
+            use_container_width=True
+        )
+        
+        st.markdown("---")
+        
         # 상위 10개 역 막대 차트
         st.subheader("상위 역 시각화")
         top_10 = ranking.head(10)
         
-        chart = alt.Chart(top_10).mark_bar().encode(
-            x=alt.X('peak:Q', title='피크 혼잡도'),
-            y=alt.Y(f'{meta_col_역명}:N', title='역명', sort='-x'),
-            color=alt.Color('peak:Q', scale=alt.Scale(scheme='reds'), legend=None),
-            tooltip=[meta_col_역명, meta_col_운행구분, 'peak', 'peak_time']
-        ).properties(
-            width=700,
-            height=400
-        )
-        
+        chart = create_ranking_bar_chart(top_10, meta_col_역명, meta_col_운행구분)
         st.altair_chart(chart, use_container_width=True)
+
+# ==================== 탭 3: 혼잡도 히트맵 ====================
+
+with tab3:
+    st.header("혼잡도 히트맵")
+    
+    if df_filtered.empty:
+        st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
+    else:
+        # 히트맵 옵션
+        col1, col2 = st.columns([1, 3])
+        
+        with col1:
+            st.subheader("히트맵 설정")
+            
+            # 역 정렬 옵션
+            sort_option = st.radio(
+                "역 정렬 방식",
+                options=["가나다순", "피크 혼잡도순"],
+                index=0
+            )
+            
+            # 최대 표시 역 수
+            max_stations = st.slider(
+                "표시할 최대 역 수",
+                min_value=5,
+                max_value=50,
+                value=20,
+                step=5
+            )
+        
+        with col2:
+            # 역별 피크 혼잡도 계산 (정렬용)
+            station_peaks = get_station_peaks(df_filtered, meta_col_역명)
+            
+            # 정렬 방식에 따라 역 순서 결정
+            if sort_option == "피크 혼잡도순":
+                station_peaks = station_peaks.sort_values('peak_crowding', ascending=False)
+            else:  # 가나다순
+                station_peaks = station_peaks.sort_values(meta_col_역명)
+            
+            # 최대 역 수 제한
+            top_stations = station_peaks.head(max_stations)[meta_col_역명].tolist()
+            
+            # 히트맵용 데이터 필터링
+            df_heatmap = df_filtered[df_filtered[meta_col_역명].isin(top_stations)].copy()
+            
+            if df_heatmap.empty:
+                st.warning("히트맵을 생성할 데이터가 없습니다.")
+            else:
+                # 역 순서 고정
+                if sort_option == "피크 혼잡도순":
+                    station_order = station_peaks.head(max_stations)[meta_col_역명].tolist()
+                else:
+                    station_order = sorted(top_stations)
+                
+                # 히트맵 생성
+                heatmap = create_heatmap(
+                    df_heatmap,
+                    selected_line,
+                    meta_col_역명,
+                    meta_col_운행구분,
+                    station_order,
+                    all_times,
+                    max_stations
+                )
+                st.altair_chart(heatmap, use_container_width=True)
+                
+                # 통계 정보
+                st.markdown("---")
+                st.subheader("혼잡도 통계")
+                
+                col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+                
+                with col_stat1:
+                    st.metric("표시 역 수", len(top_stations))
+                
+                with col_stat2:
+                    st.metric("최대 혼잡도", f"{df_heatmap['crowding'].max():.1f}")
+                
+                with col_stat3:
+                    st.metric("평균 혼잡도", f"{df_heatmap['crowding'].mean():.1f}")
+                
+                with col_stat4:
+                    st.metric("최소 혼잡도", f"{df_heatmap['crowding'].min():.1f}")
 
 # ==================== 푸터 ====================
 
