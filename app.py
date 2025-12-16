@@ -195,7 +195,7 @@ with tab1:
                 with st.expander("상세 데이터 보기"):
                     display_cols = [meta_col_역명, meta_col_운행구분, 'time', 'crowding']
                     st.dataframe(
-                        df_compare[display_cols].sort_values([meta_col_역명, 'time_order']),
+                        df_compare.sort_values([meta_col_역명, 'time_order'])[display_cols],
                         hide_index=True
                     )
     
@@ -241,7 +241,7 @@ with tab1:
                 with st.expander("상세 데이터 보기"):
                     display_cols = [meta_col_역명, meta_col_운행구분, 'time', 'crowding']
                     st.dataframe(
-                        df_station[display_cols].sort_values('time_order'),
+                        df_station.sort_values('time_order')[display_cols],
                         hide_index=True
                     )
 
