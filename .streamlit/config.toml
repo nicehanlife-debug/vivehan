@@ -1,0 +1,29 @@
+# Streamlit 설정 파일
+# 서울교통공사 지하철 혼잡도 대시보드
+
+[theme]
+# 기본 테마 색상
+primaryColor = "#FF4B4B"           # 주요 색상 (버튼, 링크 등)
+backgroundColor = "#FFFFFF"        # 배경색
+secondaryBackgroundColor = "#F0F2F6"  # 사이드바 등 보조 배경색
+textColor = "#262730"              # 텍스트 색상
+font = "sans serif"                # 폰트
+
+[server]
+# 서버 설정
+headless = true                    # 브라우저 자동 실행 비활성화
+port = 8501                        # 포트 번호
+enableCORS = false                 # CORS 비활성화 (로컬 사용 시)
+enableXsrfProtection = true        # XSRF 보호 활성화
+maxUploadSize = 200                # 최대 업로드 크기 (MB)
+
+[browser]
+# 브라우저 설정
+gatherUsageStats = false           # 사용 통계 수집 비활성화
+serverAddress = "localhost"        # 서버 주소
+serverPort = 8501                  # 서버 포트
+
+[runner]
+# 실행 설정
+magicEnabled = true                # 자동 출력 활성화
+fastReruns = true                  # 빠른 재실행

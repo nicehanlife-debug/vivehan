@@ -1,9 +1,24 @@
+"""
+서울교통공사 지하철 혼잡도 대시보드 메인 애플리케이션
+
+이 Streamlit 앱은 지하철 혼잡도 데이터를 시각화하고 분석하는 대화형 대시보드입니다.
+
+주요 기능:
+- 호선/역/운행구분/시간대별 필터링
+- 역 상세 분석 및 비교
+- 혼잡도 랭킹
+- 히트맵 시각화
+- CSV 데이터 다운로드
+
+작성일: 2024-12-16
+버전: 1.0
+"""
 import streamlit as st
 import pandas as pd
 from data import load_data, calculate_ranking, get_station_peaks
 from charts import create_line_chart, create_comparison_chart, create_ranking_bar_chart, create_heatmap
 
-# 페이지 설정
+# ==================== 페이지 설정 ====================
 st.set_page_config(
     page_title="서울교통공사 지하철 혼잡도 대시보드",
     page_icon="🚇",
@@ -12,12 +27,19 @@ st.set_page_config(
 
 # ==================== 데이터 로드 ====================
 
+# CSV 파일 로드 및 전처리 (캐시됨)
 df = load_data()
 
+# 데이터 로딩 실패 시 앱 중단
 if df is None:
     st.stop()
 
-# 컬럼명 확인
+# 데이터 검증: 최소 컬럼 수 확인
+if len(df.columns) < 5:
+    st.error("❌ 데이터 형식이 올바르지 않습니다. 최소 5개 컬럼이 필요합니다.")
+    st.stop()
+
+# 메타 컬럼명 추출 (CSV 구조: 운영기관, 호선, 역번호, 역명, 운행구분, 시간 컬럼들...)
 col_names = df.columns.tolist()
 meta_col_운영기관 = col_names[0]
 meta_col_호선 = col_names[1]
@@ -42,10 +64,10 @@ selected_line = st.sidebar.selectbox(
     index=0 if lines else None
 )
 
-# 선택된 호선의 데이터만 필터링
+# 선택된 호선의 데이터만 필터링 (이후 필터는 이 데이터 기준)
 df_filtered = df[df[meta_col_호선] == selected_line].copy()
 
-# 비교 모드
+# 역 비교 모드 토글 (일반 모드 vs 비교 모드)
 compare_mode = st.sidebar.checkbox("🔄 역 비교 모드", value=False)
 
 # 역 필터
@@ -78,24 +100,25 @@ selected_direction = st.sidebar.selectbox(
 )
 
 # 시간 범위 필터
-# time_order 기준으로 정렬하여 올바른 시간 순서 보장
+# time_order 기준으로 정렬하여 올바른 시간 순서 보장 (05:30 ~ 00:30)
 all_times_df = df[['time', 'time_order']].drop_duplicates().sort_values('time_order')
 all_times = all_times_df['time'].tolist()
 
-st.sidebar.subheader("시간대 범위")
+st.sidebar.subheader("⏰ 시간대 범위")
 time_range = st.sidebar.select_slider(
     "시간 선택",
     options=all_times,
     value=(all_times[0], all_times[-1])
 )
 
-# Top N 설정
+# 랭킹 Top N 설정
 top_n = st.sidebar.number_input(
-    "랭킹 Top N",
+    "🏆 랭킹 Top N",
     min_value=5,
     max_value=50,
     value=20,
-    step=5
+    step=5,
+    help="상위 N개 역을 랭킹에 표시합니다"
 )
 
 # ==================== 필터 적용 ====================
@@ -105,12 +128,20 @@ if selected_direction != '전체':
     df_filtered = df_filtered[df_filtered[meta_col_운행구분] == selected_direction]
 
 # 시간 범위 필터 적용
-time_start_minutes = int(df_filtered[df_filtered['time'] == time_range[0]]['time_order'].iloc[0])
-time_end_minutes = int(df_filtered[df_filtered['time'] == time_range[1]]['time_order'].iloc[0])
-df_filtered = df_filtered[
-    (df_filtered['time_order'] >= time_start_minutes) & 
-    (df_filtered['time_order'] <= time_end_minutes)
-]
+try:
+    time_start_df = df_filtered[df_filtered['time'] == time_range[0]]
+    time_end_df = df_filtered[df_filtered['time'] == time_range[1]]
+    
+    if not time_start_df.empty and not time_end_df.empty:
+        time_start_minutes = int(time_start_df['time_order'].iloc[0])
+        time_end_minutes = int(time_end_df['time_order'].iloc[0])
+        df_filtered = df_filtered[
+            (df_filtered['time_order'] >= time_start_minutes) & 
+            (df_filtered['time_order'] <= time_end_minutes)
+        ]
+except (KeyError, IndexError, ValueError) as e:
+    st.warning(f"⚠️ 시간 범위 필터링 중 오류가 발생했습니다: {e}")
+    # 에러 발생 시 시간 필터링 없이 진행
 
 # ==================== 탭 구성 ====================
 
